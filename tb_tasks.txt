@@ -1,0 +1,188 @@
+task initialize;
+    send_cmd = 0;
+    REF_CLK = 0;
+    RST_n = 0;
+    SPI_triggering = 0;
+    SPI_tx_data = 0;
+    SPI_pos_edge = 0;
+    SPI_width8 = 0;
+    en_AFE = 0;
+    strt_tx = 0;
+    repeat (2) @(posedge REF_CLK);
+    @(negedge REF_CLK);				// on negedge REF_CLK after a few REF clocks
+    RST_n = 1;						// deasert reset
+    @(negedge REF_CLK);
+endtask
+
+task send;
+    input logic [7:0] addr, data;
+
+    send_cmd = 0;
+    @(posedge clk);
+    host_cmd = {addr,data};
+    send_cmd = 1;
+    @(posedge clk);
+    send_cmd = 0;
+    fork
+        begin: TIMEOUT;
+            repeat(2000) @(posedge clk);
+            $display("ERR: timed out waiting for response from DUT");
+            $stop();
+        end
+        begin
+            @(posedge resp_rdy);
+            disable TIMEOUT;
+        end
+    join
+        clr_resp_rdy = 1;
+        @(posedge clk);
+        clr_resp_rdy = 0;
+        if (resp!=POS_ACK) 
+        begin
+            $display("ERR: expecting POS_ACK");
+            $stop();
+        end
+        @(posedge clk);
+endtask
+        
+task read;
+    input logic [7:0] addr;
+
+    send_cmd = 0;
+    @(posedge clk)
+    host_cmd = {addr,8'hxx};
+    @(posedge clk);
+    send_cmd = 1;
+    @(posedge clk);
+    send_cmd = 0;
+    fork
+        begin: TIMEOUT;
+            repeat(2000) @(posedge clk);
+            $display("ERR: timed out waiting for response from DUT");
+            $stop();
+        end
+        begin
+            @(posedge resp_rdy);
+            disable TIMEOUT;
+        end
+    join
+        clr_resp_rdy = 1;
+        @(posedge clk);
+        clr_resp_rdy = 0;
+        @(posedge clk);
+endtask
+
+task wait_capture;
+    capture_done_bit = 1'b0;
+    loop_cnt = 0;
+    while (!capture_done_bit)
+        begin
+        repeat(400) @(posedge clk);		// delay a while between reads
+        loop_cnt = loop_cnt + 1;
+        if (loop_cnt>200) begin
+            $display("ERROR: capture done bit never set");
+            $stop();
+        end
+        read(TRIG_CFG_RD);
+        if (resp & 8'h20)				// is capture_done bits set?
+            capture_done_bit = 1'b1;
+        end
+    $display("INFO: capture_done bit is set");
+endtask
+
+task dump;
+    input logic [7:0] cmd;
+    input integer fptr;
+    @(posedge clk);
+    send_cmd = 0;
+    @(posedge clk)
+    host_cmd = {cmd,8'hxx};
+    @(posedge clk);
+    send_cmd = 1;
+    @(posedge clk);
+    send_cmd = 0;
+    @(posedge cmd_sent);
+    @(posedge clk);
+    for (sample=0; sample<384; sample++)
+        fork
+        begin: timeout1
+            repeat(6000) @(posedge clk);
+            $display("ERR: Only received %d of 384 bytes on dump",sample);
+            $stop();
+            sample = 384;		// break out of loop
+        end
+        begin
+            @(posedge resp_rdy);
+            disable timeout1;
+            $fdisplay(fptr,"%h",resp);		// write to fptr
+            clr_resp_rdy = 1;
+            @(posedge clk);
+            clr_resp_rdy = 0;
+            // if (sample%32==0) $display("At sample %d of dump",sample);
+        end
+        join
+        @(posedge clk);
+endtask
+
+task compare;
+    input integer fexp;
+    input integer fptr;
+    found_res = $fscanf(fptr,"%h",res);
+    found_expected = $fscanf(fexp,"%h",exp);
+    $display("Starting comparison");
+    sample = 1;
+    mismatches = 0;
+    while (found_expected==1) begin
+        if (res!==exp)
+        begin
+            $display("At sample %d the result of %h does not match expected of %h",sample,res,exp);
+            mismatches = mismatches + 1;
+            if (mismatches>150) begin
+            $display("ERR: Too many mismatches...stopping test1");
+            $stop();
+            end
+        end
+        sample = sample + 1;
+        found_res = $fscanf(fptr,"%h",res);
+        found_expected = $fscanf(fexp,"%h",exp);
+    end	
+endtask
+
+task pass;
+    input integer number;
+    $display("YAHOO! comparison completed, test%d passed!", number);
+endtask
+
+task start_tx;
+    @(posedge clk);
+    strt_tx = 1;
+    @(posedge clk);
+    strt_tx = 0;
+    @(posedge done);
+    @(posedge clk);
+endtask
+
+task write_files;
+    input integer i;
+    fptr1 = $fopen({$sformatf("test%0d",i),"_CH1dmp.txt"},"w");
+    fptr2 = $fopen({$sformatf("test%0d",i),"_CH2dmp.txt"},"w");
+    fptr3 = $fopen({$sformatf("test%0d",i),"_CH3dmp.txt"},"w");
+    fptr4 = $fopen({$sformatf("test%0d",i),"_CH4dmp.txt"},"w");
+    fptr5 = $fopen({$sformatf("test%0d",i),"_CH5dmp.txt"},"w");
+endtask
+
+task close_files;
+    $fclose(fptr1);
+    $fclose(fptr2);
+    $fclose(fptr3);
+    $fclose(fptr4);
+    $fclose(fptr5);
+endtask
+
+task dump_all;
+    dump(DUMP_CH1, fptr1);
+    dump(DUMP_CH2, fptr2);
+    dump(DUMP_CH3, fptr3);
+    dump(DUMP_CH4, fptr4);
+    dump(DUMP_CH5, fptr5);
+endtask

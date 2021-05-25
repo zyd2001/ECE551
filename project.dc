@@ -1,0 +1,54 @@
+read_file -format sverilog { capture.sv channel_sample.sv chnnl_trig.sv clk_rst_smpl.sv cmd_cfg.sv dig_core.sv dual_PWM.sv LA_dig.sv prot_trig.sv pwm8.sv RAMqueue.sv SPI_RX.sv trigger.sv trigger_logic.sv UART_RX_prot.sv UART_rx.sv UART_tx.sv UART.sv UART_wrapper.sv }
+set current_design LA_dig
+link
+
+# create clock
+create_clock -name "clk400MHz" -period 1 {clk400MHz}
+create_generated_clock -name "clk" -source [get_port clk400MHz] -divide_by 4 [get_pins iCLKRST/clk]
+create_generated_clock -name "smpl_clk" -source [get_port clk400MHz] -divide_by 1 [get_pins iCLKRST/smpl_clk]
+set_dont_touch_network [find port clk400MHz]
+set_dont_touch_network [get_pins iCLKRST/clk]
+set_dont_touch_network [get_pins iCLKRST/smpl_clk]
+
+# set input delay
+set_input_delay -clock smpl_clk -clock_fall 0.25 [find port CH*]
+set_input_delay -clock clk400MHz 0.25 {RST_n locked}
+set_input_delay -clock clk 0.25 [find port RX]
+
+# set driving strength
+set_driving_cell -lib_cell NAND2X1_RVT -library saed32rvt_tt0p85v25c [all_inputs]
+
+# set output delay
+set_output_delay -clock clk 0.5 [all_outputs]
+set_load 0.05 [all_outputs]
+
+# set false path
+set_false_path -from [get_cells iDIG/iCMD/decimator*]
+set_false_path -from [get_cells iCOMM/high*]
+
+# set wire load
+set_wire_load_model -name 16000 -library saed32rvt_tt0p85v25c
+
+# set transition time
+set_max_transition 0.15 [current_design]
+
+# set clock uncertainty
+set_clock_uncertainty 0.2 clk
+set_fix_hold clk
+
+# compile
+compile -map_effort medium
+
+# flatten
+ungroup -all -flatten
+
+# compile
+compile -map_effort medium
+
+# report
+report_timing -delay min > min_timing.txt
+report_timing -delay max > max_timing.txt
+report_area > area_report.txt
+
+# output
+write -format verilog LA_dig -output LA_dig.vg
